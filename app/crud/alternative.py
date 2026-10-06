@@ -51,4 +51,16 @@ class CRUDAlternativeMaterialRestriction(CRUDBase[AlternativeMaterialRestriction
             return restriction.is_allowed
         return True
 
+    def is_alternative_allowed_by_materials(
+        self, db: Session, material_id: int, alternative_material_id: int,
+        vehicle_model_id: int
+    ) -> bool:
+        alt = db.query(AlternativeMaterial).filter(
+            AlternativeMaterial.material_id == material_id,
+            AlternativeMaterial.alternative_material_id == alternative_material_id
+        ).first()
+        if not alt or not alt.is_active:
+            return False
+        return self.is_alternative_allowed(db, alt.id, vehicle_model_id)
+
 crud_alternative_restriction = CRUDAlternativeMaterialRestriction(AlternativeMaterialRestriction)

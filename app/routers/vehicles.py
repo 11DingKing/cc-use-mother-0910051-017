@@ -49,7 +49,8 @@ def update_vehicle_model(
         raise HTTPException(status_code=404, detail="车型不存在")
     return crud_vehicle.update(db, db_obj=db_vehicle, obj_in=vehicle_in)
 
-@router.post("/{vehicle_id}/bom", response_model=BOMItem)
+@router.post("/{vehicle_id}/bom", response_model=BOMItem, deprecated=True,
+             summary="[已弃用]直接维护BOM，变更请使用 /bom-versions 版本流程")
 def add_bom_item(
     vehicle_id: int,
     bom_item_in: BOMItemCreate,
@@ -61,11 +62,13 @@ def add_bom_item(
     bom_item_in.vehicle_model_id = vehicle_id
     return crud_vehicle.add_bom_item(db, vehicle_model_id=vehicle_id, bom_item_in=bom_item_in)
 
-@router.get("/{vehicle_id}/bom", response_model=List[BOMItem])
+@router.get("/{vehicle_id}/bom", response_model=List[BOMItem], deprecated=True,
+            summary="[已弃用]直接维护式BOM查询，版本化BOM请使用 /bom-versions")
 def get_bom_items(vehicle_id: int, db: Session = Depends(get_db)):
     return crud_vehicle.get_bom_items(db, vehicle_id)
 
-@router.delete("/bom/{bom_item_id}")
+@router.delete("/bom/{bom_item_id}", deprecated=True,
+               summary="[已弃用]直接删除BOM行，变更请使用 /bom-versions 版本流程")
 def delete_bom_item(bom_item_id: int, db: Session = Depends(get_db)):
     crud_vehicle.remove_bom_item(db, bom_item_id)
     return {"message": "删除成功"}

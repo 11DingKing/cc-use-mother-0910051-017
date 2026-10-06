@@ -168,20 +168,14 @@ class SupplierConfirmationService:
         pool = MaterialPool(current_stock, adjusted_in_transit)
 
         active_models = crud_vehicle.get_active_models(db)
-        model_bom_quantity: Dict[int, int] = {}
-        for vm in active_models:
-            bom_items = crud_vehicle.get_bom_items(db, vm.id)
-            uses_material = next((bi for bi in bom_items if bi.material_id == material_id), None)
-            if uses_material:
-                model_bom_quantity[vm.id] = uses_material.quantity
 
-        if not model_bom_quantity:
-            return []
+        # 未开工批次（含已下达冻结）按各自快照/生效版本取用量
+        all_batches = crud_production_batch.get_open_batches_sorted(db)
 
-        all_batches = crud_production_batch.get_planned_batches_sorted(db)
+        from app.services.bom_resolver import BOMResolver
         relevant_batches = [
             b for b in all_batches
-            if b.vehicle_model_id in model_bom_quantity
+            if BOMResolver.get_batch_material_qty(db, b, material_id) is not None
         ]
         relevant_batches.sort(key=lambda b: (
             b.plan_date,
@@ -191,25 +185,28 @@ class SupplierConfirmationService:
         from app.crud.alternative import crud_alternative_material, crud_alternative_restriction
         from app.crud.purchase import crud_inventory_batch as inv_batch
         alternatives_data: Dict[int, Dict] = {}
-        for vm_id in model_bom_quantity:
-            alts = crud_alternative_material.get_alternatives_for_material(db, material_id)
-            available_alts = []
-            total_alt_qty = 0
-            for alt in alts:
-                if crud_alternative_restriction.is_alternative_allowed(db, alt.id, vm_id):
-                    alt_stock = inv_batch.get_total_stock(db, alt.alternative_material_id)
-                    if alt_stock > 0:
-                        available_alts.append({
-                            "alternative_id": alt.id,
-                            "material_id": alt.alternative_material_id,
-                            "stock": alt_stock,
-                            "priority": alt.priority
-                        })
-                        total_alt_qty += alt_stock
-            alternatives_data[vm_id] = {
-                "available": available_alts,
-                "total_stock": total_alt_qty
-            }
+
+        def get_alternatives(vm_id: int) -> Dict:
+            if vm_id not in alternatives_data:
+                alts = crud_alternative_material.get_alternatives_for_material(db, material_id)
+                available_alts = []
+                total_alt_qty = 0
+                for alt in alts:
+                    if crud_alternative_restriction.is_alternative_allowed(db, alt.id, vm_id):
+                        alt_stock = inv_batch.get_total_stock(db, alt.alternative_material_id)
+                        if alt_stock > 0:
+                            available_alts.append({
+                                "alternative_id": alt.id,
+                                "material_id": alt.alternative_material_id,
+                                "stock": alt_stock,
+                                "priority": alt.priority
+                            })
+                            total_alt_qty += alt_stock
+                alternatives_data[vm_id] = {
+                    "available": available_alts,
+                    "total_stock": total_alt_qty
+                }
+            return alternatives_data[vm_id]
 
         impacts: List[SupplierShortageImpact] = []
         remaining_shortage = shortage_qty
@@ -218,7 +215,7 @@ class SupplierConfirmationService:
             if remaining_shortage <= 0:
                 break
             vm_id = batch.vehicle_model_id
-            bom_qty = model_bom_quantity.get(vm_id, 0)
+            bom_qty = BOMResolver.get_batch_material_qty(db, batch, material_id) or 0
             required_qty = bom_qty * batch.quantity
 
             available_on_time = pool.get_available_by(batch.plan_date)
@@ -227,7 +224,7 @@ class SupplierConfirmationService:
                 pool.consume(required_qty, batch.plan_date)
                 continue
 
-            alt_data = alternatives_data.get(vm_id, {})
+            alt_data = get_alternatives(vm_id)
             total_alt_stock = alt_data.get("total_stock", 0)
             shortfall = required_qty - available_on_time
 

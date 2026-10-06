@@ -63,6 +63,19 @@ class CRUDProductionBatch(CRUDBase[ProductionBatch, ProductionBatchCreate, Produ
             VehicleModel.priority.desc()
         ).all()
 
+    def get_open_batches_sorted(self, db: Session, after_date=None) -> List[ProductionBatch]:
+        """未开工批次：planned(未下达) 与 released(已下达冻结)。"""
+        from app.models import VehicleModel
+        query = db.query(ProductionBatch).filter(
+            ProductionBatch.status.in_(["planned", "released"])
+        )
+        if after_date:
+            query = query.filter(ProductionBatch.plan_date >= after_date)
+        return query.join(VehicleModel).order_by(
+            ProductionBatch.plan_date,
+            VehicleModel.priority.desc()
+        ).all()
+
     def get_bom_quantity(self, db: Session, vehicle_model_id: int, material_id: int) -> Optional[int]:
         bom_item = db.query(BOMItem).filter(
             BOMItem.vehicle_model_id == vehicle_model_id,

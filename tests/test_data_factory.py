@@ -86,6 +86,36 @@ class DataFactory:
                 )
             )
 
+    def create_bom_version(self, vehicle_code: str, items: dict,
+                           effective_date=None, change_type: str = "normal",
+                           approve: bool = True, reason: str = "测试变更",
+                           impacts: dict = None, source_version_id: int = None):
+        """items: {material_code: 单位用量}。默认创建后直接提交并审批。"""
+        from app.schemas import BOMVersionCreate, BOMVersionItemCreate
+        from app.services.bom_version import BOMVersionService
+        vehicle_id = self.vehicle_models[vehicle_code].id
+        payload_items = [
+            BOMVersionItemCreate(material_id=self.materials[code].id, quantity=qty)
+            for code, qty in items.items()
+        ]
+        impacts = impacts or {}
+        version_in = BOMVersionCreate(
+            vehicle_model_id=vehicle_id,
+            effective_date=effective_date or date.today(),
+            reason=reason,
+            change_type=change_type,
+            items=payload_items,
+            purchase_impact=impacts.get("purchase_impact"),
+            inventory_impact=impacts.get("inventory_impact"),
+            delay_impact_note=impacts.get("delay_impact_note"),
+            source_version_id=source_version_id
+        )
+        version = BOMVersionService.create_version(self.db, version_in)
+        if approve:
+            BOMVersionService.submit_version(self.db, version.id)
+            version = BOMVersionService.approve_version(self.db, version.id)
+        return version
+
     def create_supplier(self, code: str, name: str, contact: str = None,
                         phone: str = None, address: str = None, rating: float = 4.5):
         if not crud_supplier.get_by_code(self.db, code):

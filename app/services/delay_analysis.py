@@ -6,6 +6,7 @@ from app.crud.vehicle import crud_vehicle, crud_production_batch
 from app.crud.alternative import crud_alternative_material, crud_alternative_restriction
 from app.schemas import DelayImpactAnalysisResult, ProductionBatch, DelayImpactCreate
 from app.models import PurchaseOrder
+from app.services.bom_resolver import BOMResolver
 
 
 class DelayAnalysisService:
@@ -66,13 +67,18 @@ class DelayAnalysisService:
         adjusted_in_transit.sort(key=lambda x: x["expected_date"])
 
         active_models = crud_vehicle.get_active_models(db)
-        model_bom_quantity: Dict[int, int] = {}
-        for vm in active_models:
-            qty = crud_production_batch.get_bom_quantity(db, vm.id, material_id)
-            if qty is not None:
-                model_bom_quantity[vm.id] = qty
 
-        if not model_bom_quantity:
+        # 未开工批次包含 planned（未下达，按生效版本）与 released（已下达冻结）；
+        # 每个批次按各自冻结快照/生效版本取单位用量，不再用单一当前 BOM。
+        all_batches = crud_production_batch.get_open_batches_sorted(db)
+
+        relevant_batches: List = []
+        for batch in all_batches:
+            bom_qty = BOMResolver.get_batch_material_qty(db, batch, material_id)
+            if bom_qty is not None:
+                relevant_batches.append(batch)
+
+        if not relevant_batches:
             crud_delay_impact.delete_by_purchase_order(db, purchase_order_id)
             return DelayImpactAnalysisResult(
                 purchase_order_id=purchase_order_id,
@@ -81,7 +87,7 @@ class DelayAnalysisService:
                 total_affected_quantity=0,
                 impact_level="none",
                 estimated_delay_days=0,
-                remark="无车型使用该物料",
+                remark="无未开工批次使用该物料",
                 analysis_details=[],
                 material_balance={
                     "current_stock": current_stock,
@@ -89,39 +95,35 @@ class DelayAnalysisService:
                 }
             )
 
-        all_batches = crud_production_batch.get_planned_batches_sorted(db)
-
-        relevant_batches = [
-            b for b in all_batches
-            if b.vehicle_model_id in model_bom_quantity
-        ]
-
         relevant_batches.sort(key=lambda b: (
             b.plan_date,
             -b.vehicle_model.priority if b.vehicle_model else 0
         ))
 
         alternatives_data: Dict[int, Dict] = {}
-        for vm_id in model_bom_quantity:
-            alts = crud_alternative_material.get_alternatives_for_material(db, material_id)
-            available_alts = []
-            total_alt_qty = 0
-            for alt in alts:
-                if crud_alternative_restriction.is_alternative_allowed(db, alt.id, vm_id):
-                    alt_stock = crud_inventory_batch.get_total_stock(db, alt.alternative_material_id)
-                    if alt_stock > 0:
-                        available_alts.append({
-                            "alternative_id": alt.id,
-                            "material_id": alt.alternative_material_id,
-                            "material_name": alt.alternative_material.name if alt.alternative_material else "未知",
-                            "stock": alt_stock,
-                            "priority": alt.priority
-                        })
-                        total_alt_qty += alt_stock
-            alternatives_data[vm_id] = {
-                "available": available_alts,
-                "total_stock": total_alt_qty
-            }
+
+        def get_alternatives(vm_id: int) -> Dict:
+            if vm_id not in alternatives_data:
+                alts = crud_alternative_material.get_alternatives_for_material(db, material_id)
+                available_alts = []
+                total_alt_qty = 0
+                for alt in alts:
+                    if crud_alternative_restriction.is_alternative_allowed(db, alt.id, vm_id):
+                        alt_stock = crud_inventory_batch.get_total_stock(db, alt.alternative_material_id)
+                        if alt_stock > 0:
+                            available_alts.append({
+                                "alternative_id": alt.id,
+                                "material_id": alt.alternative_material_id,
+                                "material_name": alt.alternative_material.name if alt.alternative_material else "未知",
+                                "stock": alt_stock,
+                                "priority": alt.priority
+                            })
+                            total_alt_qty += alt_stock
+                alternatives_data[vm_id] = {
+                    "available": available_alts,
+                    "total_stock": total_alt_qty
+                }
+            return alternatives_data[vm_id]
 
         class MaterialPool:
             def __init__(self, initial_stock: int, in_transit: List[dict]):
@@ -183,7 +185,8 @@ class DelayAnalysisService:
                 return None
 
         pool = MaterialPool(current_stock, adjusted_in_transit)
-        for vm_id, alt_data in alternatives_data.items():
+        for vm_id in {b.vehicle_model_id for b in relevant_batches}:
+            alt_data = get_alternatives(vm_id)
             for alt in alt_data["available"]:
                 if alt["material_id"] not in pool.alt_stock:
                     pool.alt_stock[alt["material_id"]] = alt["stock"]
@@ -194,7 +197,7 @@ class DelayAnalysisService:
 
         for batch in relevant_batches:
             vm_id = batch.vehicle_model_id
-            bom_qty = model_bom_quantity.get(vm_id, 0)
+            bom_qty = BOMResolver.get_batch_material_qty(db, batch, material_id) or 0
             required_qty = bom_qty * batch.quantity
 
             batch_detail = {

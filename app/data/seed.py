@@ -28,6 +28,7 @@ def seed_all(db: Session):
     materials = seed_materials(db)
     vehicle_models = seed_vehicle_models(db)
     seed_bom_items(db, vehicle_models, materials)
+    seed_bom_versions(db, vehicle_models)
     suppliers = seed_suppliers(db)
     seed_supply_capacities(db, suppliers, materials)
     production_batches = seed_production_batches(db, vehicle_models)
@@ -105,6 +106,38 @@ def seed_bom_items(db: Session, vehicles, materials):
                         quantity=qty
                     )
                 )
+
+def seed_bom_versions(db: Session, vehicles):
+    """以遗留 BOM 为内容建立各车型的初始已审批版本（V001，历史生效），作为版本基线。"""
+    print("正在创建BOM版本基线...")
+    from app.models import BOMVersion, BOMVersionItem
+    from app.crud.bom_version import crud_bom_version
+    baseline_date = date.today() - timedelta(days=365)
+    for vehicle_code, vehicle in vehicles.items():
+        existing = crud_bom_version.list_by_vehicle(db, vehicle.id)
+        if existing:
+            continue
+        bom_items = crud_vehicle.get_bom_items(db, vehicle.id)
+        if not bom_items:
+            continue
+        version = BOMVersion(
+            vehicle_model_id=vehicle.id,
+            version_no="V001",
+            change_type="normal",
+            status="approved",
+            effective_date=baseline_date,
+            reason="BOM版本化初始基线",
+        )
+        db.add(version)
+        db.flush()
+        for bi in bom_items:
+            db.add(BOMVersionItem(
+                version_id=version.id,
+                material_id=bi.material_id,
+                quantity=bi.quantity,
+                change_flag="added"
+            ))
+        db.commit()
 
 def seed_suppliers(db: Session):
     print("正在创建供应商数据...")

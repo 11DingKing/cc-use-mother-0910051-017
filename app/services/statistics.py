@@ -76,9 +76,10 @@ class StatisticsService:
             shortage_for_rate = net_shortage if net_shortage > 0 else gross_shortage
             shortage_rate = shortage_for_rate / safety_stock if safety_stock > 0 else 1
             affected_models = []
+            from app.services.bom_resolver import BOMResolver
             for vehicle in active_vehicles:
-                bom_items = crud_vehicle.get_bom_items(db, vehicle.id)
-                if any(bi.material_id == material.id for bi in bom_items):
+                bom_map = BOMResolver.get_current_bom_map(db, vehicle.id)
+                if material.id in bom_map:
                     affected_models.append(vehicle.name)
             result.append(MaterialShortageAlert(
                 material_id=material.id,

@@ -5,6 +5,7 @@ from app.crud.vehicle import crud_vehicle, crud_production_batch
 from app.crud.material import crud_material
 from app.crud.purchase import crud_inventory_batch, crud_purchase_suggestion, crud_purchase_order
 from app.schemas import MaterialRequirement
+from app.services.bom_resolver import BOMResolver
 
 class RequirementService:
     @staticmethod
@@ -19,15 +20,26 @@ class RequirementService:
                 m for m in active_models if m.priority in vehicle_model_priorities
             ]
         active_models.sort(key=lambda m: m.priority, reverse=True)
+
+        # 按车型汇总各物料的毛需求：已下达批次按冻结快照，未下达批次按生效版本，
+        # 因此同一车型在 BOM 变更前后下达的批次会按各自版本拆料。
+        vehicle_required: Dict[int, Dict[int, int]] = {}
+        for vehicle_model in active_models:
+            required_map: Dict[int, int] = {}
+            # planned=未下达，released=已下达未开工；已领料/完工批次不再计入毛需求
+            planned_batches = [
+                b for b in crud_production_batch.get_by_vehicle_model(db, vehicle_model.id)
+                if b.status in ("planned", "released")
+            ]
+            for batch in planned_batches:
+                bom_map = BOMResolver.get_batch_bom_map(db, batch)
+                for material_id, per_unit in bom_map.items():
+                    required_map[material_id] = required_map.get(material_id, 0) + per_unit * batch.quantity
+            vehicle_required[vehicle_model.id] = required_map
+
         material_requirements: Dict[int, Dict] = {}
         for vehicle_model in active_models:
-            bom_items = crud_vehicle.get_bom_items(db, vehicle_model.id)
-            planned_batches = crud_production_batch.get_by_vehicle_model(db, vehicle_model.id)
-            planned_batches = [b for b in planned_batches if b.status == "planned"]
-            total_production_quantity = sum(b.quantity for b in planned_batches)
-            for bom_item in bom_items:
-                material_id = bom_item.material_id
-                required_qty = bom_item.quantity * total_production_quantity
+            for material_id, required_qty in vehicle_required[vehicle_model.id].items():
                 if material_id not in material_requirements:
                     material = crud_material.get(db, material_id)
                     stock_qty = crud_inventory_batch.get_total_stock(db, material_id)
@@ -49,6 +61,7 @@ class RequirementService:
                 material_requirements[material_id]["required_quantity"] += required_qty
                 if vehicle_model.priority > material_requirements[material_id]["priority"]:
                     material_requirements[material_id]["priority"] = vehicle_model.priority
+
         result = []
         for mat_id, req in material_requirements.items():
             total_needed = req["required_quantity"]
@@ -82,19 +95,25 @@ class RequirementService:
         vehicle_model = crud_vehicle.get(db, vehicle_model_id)
         if not vehicle_model:
             return []
-        bom_items = crud_vehicle.get_bom_items(db, vehicle_model_id)
-        planned_batches = crud_production_batch.get_by_vehicle_model(db, vehicle_model_id)
-        planned_batches = [b for b in planned_batches if b.status == "planned"]
-        total_production_quantity = sum(b.quantity for b in planned_batches)
+
+        required_map: Dict[int, int] = {}
+        planned_batches = [
+            b for b in crud_production_batch.get_by_vehicle_model(db, vehicle_model_id)
+            if b.status not in ("completed", "closed")
+        ]
+        for batch in planned_batches:
+            bom_map = BOMResolver.get_batch_bom_map(db, batch)
+            for material_id, per_unit in bom_map.items():
+                required_map[material_id] = required_map.get(material_id, 0) + per_unit * batch.quantity
+
         result = []
-        for bom_item in bom_items:
-            material = crud_material.get(db, bom_item.material_id)
+        for material_id, required_qty in required_map.items():
+            material = crud_material.get(db, material_id)
             if not material:
                 continue
-            stock_qty = crud_inventory_batch.get_total_stock(db, bom_item.material_id)
-            required_qty = bom_item.quantity * total_production_quantity
-            pending_qty = crud_purchase_suggestion.get_pending_quantity_by_material(db, bom_item.material_id)
-            in_transit_qty = crud_purchase_order.get_in_transit_quantity_by_material(db, bom_item.material_id)
+            stock_qty = crud_inventory_batch.get_total_stock(db, material_id)
+            pending_qty = crud_purchase_suggestion.get_pending_quantity_by_material(db, material_id)
+            in_transit_qty = crud_purchase_order.get_in_transit_quantity_by_material(db, material_id)
             gross_shortage = max(0, required_qty + material.safety_stock - stock_qty)
             net_shortage = max(0, gross_shortage - pending_qty - in_transit_qty)
             result.append(MaterialRequirement(

@@ -286,6 +286,9 @@ class ProductionBatchUpdate(BaseModel):
 class ProductionBatch(ProductionBatchBase):
     id: int
     created_at: datetime
+    bom_version_id: Optional[int] = None
+    released_at: Optional[datetime] = None
+    freeze_reason: Optional[str] = None
     vehicle_model: Optional[VehicleModel] = None
     class Config:
         from_attributes = True
@@ -510,3 +513,224 @@ class SupplierConfirmationStatistics(BaseModel):
 class ExtendedStatisticsResponse(StatisticsResponse):
     supplier_confirmation_stats: SupplierConfirmationStatistics
     supplier_bottlenecks: List[SupplierBottleneckAnalysis]
+
+
+# ==================== BOM 版本化 ====================
+
+class BOMVersionItemCreate(BaseModel):
+    material_id: int
+    quantity: int = Field(gt=0)
+    remark: Optional[str] = None
+
+class BOMVersionItem(BOMVersionItemCreate):
+    id: int
+    class Config:
+        from_attributes = True
+
+class BOMVersionAlternativeOut(BaseModel):
+    id: int
+    material_id: int
+    alternative_material_id: int
+    priority: int
+    is_allowed: bool
+    remark: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class BOMVersionCreate(BaseModel):
+    vehicle_model_id: Optional[int] = None
+    effective_date: date
+    change_type: str = "normal"  # normal/emergency/rollback
+    change_reason: Optional[str] = None
+    base_version_id: Optional[int] = None  # 从指定版本拷贝明细；为空则拷贝当前生效版本
+    items: List[BOMVersionItemCreate] = []
+
+class BOMVersionApprove(BaseModel):
+    approved_by: str
+    impact_summary: Optional[str] = None  # 回退/紧急更改必须说明采购建议、库存分配、延期结论影响
+
+class BOMVersionReject(BaseModel):
+    reject_reason: str
+
+class BOMVersion(BaseModel):
+    id: int
+    vehicle_model_id: int
+    version_no: str
+    status: str
+    change_type: str
+    effective_date: date
+    expire_date: Optional[date] = None
+    change_reason: Optional[str] = None
+    impact_summary: Optional[str] = None
+    submitted_by: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    reject_reason: Optional[str] = None
+    rolled_back_from_version_id: Optional[int] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    items: List[BOMVersionItem] = []
+    class Config:
+        from_attributes = True
+
+class BOMVersionDetail(BOMVersion):
+    alternatives: List[BOMVersionAlternativeOut] = []
+
+class BOMVersionDiffItem(BaseModel):
+    change: str  # added/removed/quantity_changed
+    material_id: int
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    old_quantity: Optional[int] = None
+    new_quantity: Optional[int] = None
+
+class BOMVersionDiff(BaseModel):
+    vehicle_model_id: int
+    from_version_id: Optional[int] = None
+    to_version_id: int
+    items: List[BOMVersionDiffItem] = []
+
+class BatchBOMItemSnapshot(BaseModel):
+    id: int
+    bom_version_id: int
+    material_id: int
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    quantity: int
+    remark: Optional[str] = None
+    frozen_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
+class BatchReleaseRequest(BaseModel):
+    operator: Optional[str] = None
+    bom_version_id: Optional[int] = None  # 指定冻结版本；为空取计划日生效版本
+    freeze_reason: Optional[str] = None
+
+class BatchIssueMaterialRequest(BaseModel):
+    material_id: int
+    issued_quantity: int = Field(gt=0)
+    required_quantity: Optional[int] = None  # 为空按冻结BOM×批次数量计算
+    issue_no: Optional[str] = None
+    issue_date: Optional[date] = None
+    deviation_id: Optional[int] = None
+    remark: Optional[str] = None
+
+class ProductionMaterialIssueOut(BaseModel):
+    id: int
+    issue_no: str
+    production_batch_id: int
+    material_id: int
+    required_quantity: int
+    issued_quantity: int
+    deviation_id: Optional[int] = None
+    issue_date: date
+    remark: Optional[str] = None
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+class MigrationImpactItem(BaseModel):
+    material_id: int
+    material_code: str
+    material_name: str
+    old_per_unit: int
+    new_per_unit: int
+    old_required: int
+    new_required: int
+    delta: int
+    current_stock: int
+    pending_suggestion_quantity: int
+    in_transit_quantity: int
+    old_gross_shortage: int
+    new_gross_shortage: int
+    shortage_delta: int
+    purchase_advice: str
+
+class BOMMigrationAssessment(BaseModel):
+    production_batch_id: int
+    batch_no: str
+    from_bom_version_id: int
+    to_bom_version_id: int
+    impact_items: List[MigrationImpactItem] = []
+    inventory_allocation_summary: str
+    delay_conclusion: str
+    overall_conclusion: str
+    existing_assessment_id: Optional[int] = None
+
+class BOMMigrationApprove(BaseModel):
+    approved_by: str
+    remark: Optional[str] = None
+
+class BOMDeviationCreate(BaseModel):
+    deviation_type: str  # quantity/substitute/add_material/remove_material
+    material_id: int
+    substitute_material_id: Optional[int] = None
+    actual_quantity: Optional[int] = None  # 实际单位用量
+    issue_quantity: Optional[int] = None   # 或直接给该批次总偏差量
+    reason: str
+    impact_summary: Optional[str] = None
+    requested_by: Optional[str] = None
+
+class BOMDeviationApprove(BaseModel):
+    approved_by: str
+    impact_summary: Optional[str] = None
+
+class BOMDeviationOut(BaseModel):
+    id: int
+    deviation_no: str
+    production_batch_id: int
+    bom_version_id: int
+    deviation_type: str
+    material_id: int
+    substitute_material_id: Optional[int] = None
+    frozen_quantity: int
+    actual_quantity: int
+    quantity_delta: int
+    reason: str
+    impact_summary: Optional[str] = None
+    status: str
+    requested_by: Optional[str] = None
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    applied_at: Optional[datetime] = None
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+class BatchConsumptionVariance(BaseModel):
+    material_id: int
+    material_code: str
+    material_name: str
+    frozen_per_unit: int
+    frozen_required: int
+    actual_issued: int
+    variance: int
+    deviation_ids: List[int] = []
+    deviation_nos: List[str] = []
+
+class BatchBOMTraceLineage(BaseModel):
+    change: str  # current/followed
+    version_id: int
+    version_no: str
+    change_type: str
+    status: str
+    effective_date: date
+    expire_date: Optional[date] = None
+    change_reason: Optional[str] = None
+    items: List[BOMVersionDiffItem] = []
+
+class BatchBOMTrace(BaseModel):
+    production_batch_id: int
+    batch_no: str
+    vehicle_model_id: int
+    status: str
+    frozen_bom_version_id: Optional[int] = None
+    frozen_bom_version_no: Optional[str] = None
+    frozen_at: Optional[datetime] = None
+    original_bom: List[BatchBOMItemSnapshot] = []
+    lineage: List[BatchBOMTraceLineage] = []
+    migrations: List[dict] = []
+    deviations: List[BOMDeviationOut] = []
+    consumption_variances: List[BatchConsumptionVariance] = []

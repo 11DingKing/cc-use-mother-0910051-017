@@ -22,6 +22,15 @@ class CRUDVehicleModel(CRUDBase[VehicleModel, VehicleModelCreate, VehicleModelUp
         db.add(db_obj)
         db.commit()
         db.refresh(db_obj)
+        # 存量维护入口兼容：同步到基线/当前开放的已审批版本，保证版本化读路径可见
+        from app.services.bom_bootstrap import ensure_item_in_open_version
+        ensure_item_in_open_version(
+            db,
+            vehicle_model_id=vehicle_model_id,
+            material_id=db_obj.material_id,
+            quantity=db_obj.quantity,
+            remark=db_obj.remark,
+        )
         return db_obj
 
     def get_bom_items(self, db: Session, vehicle_model_id: int) -> List[BOMItem]:
@@ -55,6 +64,19 @@ class CRUDProductionBatch(CRUDBase[ProductionBatch, ProductionBatchCreate, Produ
         from app.models import VehicleModel
         query = db.query(ProductionBatch).filter(
             ProductionBatch.status == "planned"
+        )
+        if after_date:
+            query = query.filter(ProductionBatch.plan_date >= after_date)
+        return query.join(VehicleModel).order_by(
+            ProductionBatch.plan_date,
+            VehicleModel.priority.desc()
+        ).all()
+
+    def get_batches_for_supply_sorted(self, db: Session, after_date=None) -> List[ProductionBatch]:
+        """供短缺/延期分析使用：未下达(planned)与已下达未开工(released)批次。"""
+        from app.models import VehicleModel
+        query = db.query(ProductionBatch).filter(
+            ProductionBatch.status.in_(["planned", "released"])
         )
         if after_date:
             query = query.filter(ProductionBatch.plan_date >= after_date)

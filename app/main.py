@@ -2,10 +2,12 @@ from fastapi import FastAPI
 from app.config import settings
 from app.database import engine, Base, get_db
 from app.routers import materials, vehicles, suppliers, purchase, alternatives, statistics
-from app.routers import supplier_confirmations
+from app.routers import supplier_confirmations, bom_versions
 from app.data.seed import seed_all
+from app.services.bom_bootstrap import ensure_baseline_versions, ensure_schema_columns
 
 Base.metadata.create_all(bind=engine)
+ensure_schema_columns(engine)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -20,12 +22,14 @@ app.include_router(purchase.router, prefix=settings.API_V1_STR)
 app.include_router(alternatives.router, prefix=settings.API_V1_STR)
 app.include_router(statistics.router, prefix=settings.API_V1_STR)
 app.include_router(supplier_confirmations.router, prefix=settings.API_V1_STR)
+app.include_router(bom_versions.router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 def startup_event():
     db = next(get_db())
     try:
         seed_all(db)
+        ensure_baseline_versions(db)
     finally:
         db.close()
 

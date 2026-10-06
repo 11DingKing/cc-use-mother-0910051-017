@@ -77,8 +77,15 @@ class StatisticsService:
             shortage_rate = shortage_for_rate / safety_stock if safety_stock > 0 else 1
             affected_models = []
             for vehicle in active_vehicles:
-                bom_items = crud_vehicle.get_bom_items(db, vehicle.id)
-                if any(bi.material_id == material.id for bi in bom_items):
+                from app.crud.bom import crud_bom_version, crud_bom_version_item
+                current_version = crud_bom_version.get_effective_on(db, vehicle.id, date.today())
+                if current_version:
+                    uses = material.id in crud_bom_version_item.get_quantity_map(db, current_version.id)
+                else:
+                    # 尚未建立BOM版本的存量车型退化为当前BOM结构
+                    bom_items = crud_vehicle.get_bom_items(db, vehicle.id)
+                    uses = any(bi.material_id == material.id for bi in bom_items)
+                if uses:
                     affected_models.append(vehicle.name)
             result.append(MaterialShortageAlert(
                 material_id=material.id,

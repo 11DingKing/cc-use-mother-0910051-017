@@ -49,26 +49,30 @@ def update_vehicle_model(
         raise HTTPException(status_code=404, detail="车型不存在")
     return crud_vehicle.update(db, db_obj=db_vehicle, obj_in=vehicle_in)
 
-@router.post("/{vehicle_id}/bom", response_model=BOMItem)
+@router.post("/{vehicle_id}/bom", response_model=BOMItem, deprecated=True)
 def add_bom_item(
     vehicle_id: int,
     bom_item_in: BOMItemCreate,
     db: Session = Depends(get_db)
 ):
-    db_vehicle = crud_vehicle.get(db, vehicle_id)
-    if db_vehicle is None:
-        raise HTTPException(status_code=404, detail="车型不存在")
-    bom_item_in.vehicle_model_id = vehicle_id
-    return crud_vehicle.add_bom_item(db, vehicle_model_id=vehicle_id, bom_item_in=bom_item_in)
+    # BOM 已改为带生效日期与审批状态的版本化管理，禁止直接维护当前结构
+    raise HTTPException(
+        status_code=405,
+        detail="BOM已版本化，禁止直接新增当前结构；请使用 /api/v1/bom/vehicles/{vehicle_id}/versions 创建变更版本并走审批"
+    )
 
 @router.get("/{vehicle_id}/bom", response_model=List[BOMItem])
 def get_bom_items(vehicle_id: int, db: Session = Depends(get_db)):
+    # 返回当前生效版本对应的结构（版本生效时自动同步）
     return crud_vehicle.get_bom_items(db, vehicle_id)
 
-@router.delete("/bom/{bom_item_id}")
+@router.delete("/bom/{bom_item_id}", deprecated=True)
 def delete_bom_item(bom_item_id: int, db: Session = Depends(get_db)):
-    crud_vehicle.remove_bom_item(db, bom_item_id)
-    return {"message": "删除成功"}
+    # 历史BOM行只随版本审批结果同步，不允许直接删除
+    raise HTTPException(
+        status_code=405,
+        detail="BOM已版本化，禁止直接删除当前结构行；请创建新版本（删除物料）并经审批生效"
+    )
 
 @router.get("/{vehicle_id}/requirements", response_model=List[MaterialRequirement])
 def get_vehicle_requirements(vehicle_id: int, db: Session = Depends(get_db)):
